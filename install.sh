@@ -1,5 +1,13 @@
 #!/usr/bin/env sh
 
+# Under latest RPi-OS the folder /var/log/journal is created so journald reverts to persistent journal files
+# Delete this folder and restart service
+if [ -d /var/log/journal ]; then
+  echo "/var/log/journal present - remove for volatile journal files"
+  sudo rm -rf /var/log/journal
+  sudo systemctl restart systemd-journald
+fi
+
 systemctl -q is-active log2ram  && { echo "ERROR: log2ram service is still running. Please run \"sudo service log2ram stop\" to stop it."; exit 1; }
 [ "$(id -u)" -eq 0 ] || { echo "You need to be ROOT (sudo can be used)"; exit 1; }
 
