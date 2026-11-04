@@ -1,70 +1,97 @@
 # Log2Ram
-Like ramlog for systemd (on debian 8 jessie for example).
 
-Usefull for **RaspberryPi** for not writing on the SD card all the time. You need it because your SD card doesn't want to suffer anymore!
+Keeps `/var/log` in RAM to reduce writes to the SD card, and copies it to disk every hour and at shutdown.
 
-Explanations: The script creates a `/var/log` mount point in RAM. So any writing of the log to the `/var/log` folder will not actually be written to disk (in this case to the sd card for a raspberry card) but directly to RAM. By default, every hour, the CRON will launch a synchronization of the RAM to the folder located on the physical disk. The script will also make this copy of RAM to disk in case of machine shutdown (but cannot do it in case of power failure). This way you avoid excessive writing on the SD card.
+This is the [OpenEnergyMonitor](https://openenergymonitor.org) fork of [azlux/log2ram](https://github.com/azlux/log2ram), used on the emonSD image for the emonPi and emonBase. If you are not using emonSD, the upstream project may suit you better: it is actively developed, and this fork split from it in 2018.
 
-The script [log2ram](https://github.com/azlux/log2ram) can work on every linux system. So you can use it with your own daemon manager if you don't have systemd.
+Logs written since the last copy to disk are lost if power is removed without a clean shutdown.
 
-Log2Ram is based on transient log for Systemd here : [A transient /var/log](https://www.debian-administration.org/article/661/A_transient_/var/log)
+## Differences from upstream
 
-_____
-## Menu
-1. [Install](#install)
-2. [Upgrade](#upgrade)
-3. [Customize](#customize)
-4. [It is working ?](#it-is-working)
-5. [Uninstall](#uninstall-)
+- Copies to disk with `rsync --inplace --no-whole-file`, which rewrites only the parts of a log that changed.
+- The copy of the logs on disk is in `/var/log.bak`.
+- Rotated logs are moved out of RAM to `/var/log.old`, and are linked from `/var/log/rotated_logs`.
+- The installer deletes `/var/log/journal`, so `journald` does not keep its logs on the SD card.
 
 ## Install
 
-    curl -Lo log2ram.tar.gz https://github.com/azlux/log2ram/archive/master.tar.gz
-    tar xf log2ram.tar.gz
-    cd log2ram-master
-    chmod +x install.sh && sudo ./install.sh
-    cd ..
-    rm -r log2ram-master
+On emonSD, this is already installed. [EmonScripts](https://github.com/openenergymonitor/EmonScripts) installs it as part of the image build.
 
-**REBOOT** before installing anything else (for example apache2)
+To install it yourself:
+
+```shell
+git clone https://github.com/openenergymonitor/log2ram.git
+cd log2ram
+sudo ./install.sh
+sudo reboot
+```
+
+`rsync` needs to be installed first, unless you set `USE_RSYNC=false` in `log2ram.conf`. Reboot before installing anything else.
+
 ## Upgrade
 
-You need to stop log2ram (`service log2ram stop`) and start the [install](#install).
+The emonSD update does not upgrade log2ram, so a device keeps the version from its image. To upgrade by hand:
 
-## Customize
-#### variables :
-In the file `/etc/log2ram.conf`, there are three variables:
-
-- `SIZE`: defines the size the log folder will reserve into the RAM (default is 40M).
-- `USE_RSYNC`: Can be set to `true` if you prefer ´rsync´ rather than ´cp´. I use the command `cp -u` and `rsync -X`, I don't copy the all folder every time for optimization.
-- `MAIL`: Disables the error system mail if there is not enough place on RAM (if set to `false`)
-
-#### refresh time:
-By default Log2Ram writes to the HardDisk every hour. If you think this is too much, you can make the write every day by moving the cron file to daily: `sudo mv /etc/cron.hourly/log2ram /etc/cron.daily/log2ram`.
-
-### It is working?
-You can now check the mount folder in ram with (You will see lines with log2ram if working)
-```
-# df -h
-…
-log2ram          40M  532K   40M   2% /var/log
-…
-
-# mount
-…
-log2ram on /var/log type tmpfs (rw,nosuid,nodev,noexec,relatime,size=40960k,mode=755)
-…
+```shell
+sudo systemctl stop log2ram
+git pull
+sudo ./install.sh
+sudo reboot
 ```
 
-If you have issue with apache2, you can try to add `apache2.service` next to other services on the `Before` parameter in `/etc/systemd/system/log2ram.service` it will solve the pb
+Installing **deletes the rotated logs in `/var/log.old` and replaces `/etc/log2ram.conf`**, so note any settings you have changed first.
 
-The log for log2ram will be written at: `/var/log/log2ram.log`
+## Where the logs are
 
-###### Now, muffins for everyone!
+| Location | Stored on | Contents |
+|---|---|---|
+| `/var/log` | RAM | The current logs |
+| `/var/log.bak` | Disk | The copy made every hour and at shutdown, which is loaded back into RAM at boot |
+| `/var/log.old` | Disk | Rotated logs, also available at `/var/log/rotated_logs` |
 
+## Configuration
 
-## Uninstall :(
-(Because sometime we need it)
+Settings are in `/etc/log2ram.conf`. Restart the device after changing them.
+
+| Setting | Default | Description |
+|---|---|---|
+| `SIZE` | `50M` | Space for `/var/log` in RAM |
+| `USE_RSYNC` | `true` | Copy with `rsync`. If `false`, `cp` is used instead |
+| `MAIL` | `true` | Send a system mail if the logs do not fit in `SIZE`. This needs the `mail` command, which may not be installed |
+
+## Hourly copy and log rotation
+
+The installer adds `/etc/cron.hourly/log2ram`, which copies the logs to disk.
+
+emonSD replaces that file with its own from EmonScripts, which also runs `logrotate` every hour. Doing so stops the logs filling the space in RAM between daily rotations.
+
+## Is it working?
+
+```shell
+df -h /var/log
+systemctl status log2ram
 ```
-chmod +x /usr/local/bin/uninstall-log2ram.sh && sudo /usr/local/bin/uninstall-log2ram.sh
+
+`df` should show `log2ram` as the filesystem for `/var/log`. Log2Ram's own log is `/var/log/log2ram.log`.
+
+## If the logs do not fit in RAM
+
+If the logs on disk are larger than `SIZE` at boot, log2ram does not start, and **logs are then written straight to the SD card**. `df -h /var/log` will not show `log2ram`, and `journalctl -u log2ram` shows `RAM disk too small`.
+
+To fix this, find what is using the space, then remove it or increase `SIZE`, and reboot:
+
+```shell
+sudo du -xh /var/log | sort -h | tail
 ```
+
+## Uninstall
+
+```shell
+sudo /usr/local/bin/uninstall-log2ram.sh
+```
+
+This also deletes `/var/log.bak` and `/var/log.old`.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Based on the work of [azlux](https://github.com/azlux/log2ram) and [A transient /var/log](https://www.debian-administration.org/article/661/A_transient_/var/log).
