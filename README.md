@@ -76,9 +76,15 @@ systemctl status log2ram
 
 ## If the logs do not fit in RAM
 
-If the logs on disk are larger than `SIZE` at boot, log2ram does not start, and **logs are then written straight to the SD card**. `df -h /var/log` will not show `log2ram`, and `journalctl -u log2ram` shows `RAM disk too small`.
+If the logs on disk are larger than `SIZE` at boot, log2ram frees space before it starts, until they are down to half of `SIZE`. It does these in order, stopping as soon as they are small enough:
 
-To fix this, find what is using the space, then remove it or increase `SIZE`, and reboot:
+1. Deletes `/var/log/journal`.
+2. Deletes rotated logs in `/var/log` (`*.gz`, `*.0` to `*.9`, `*.old`).
+3. Moves the largest logs to `/var/log.old/oversize-<name>`, leaving an empty file in their place. A later trim overwrites a kept log of the same name.
+
+Each step is recorded in `/var/log/log2ram.log`.
+
+If the logs still do not fit, log2ram does not start, and **logs are then written straight to the SD card**. `df -h /var/log` will not show `log2ram`, and `journalctl -u log2ram` shows `RAM disk too small`. To fix this, find what is using the space, then remove it or increase `SIZE`, and reboot:
 
 ```shell
 sudo du -xh /var/log | sort -h | tail

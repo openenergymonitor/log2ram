@@ -15,6 +15,45 @@ isSafe () {
     [ -d $HDD_LOG/ ] || exit 1
 }
 
+logSize () {
+    du -s --block-size=1 $RAM_LOG/ | cut -f1
+}
+
+# If the logs on disk would not fit in RAM, free space rather than leave logs
+# writing to the SD card. Runs at boot before anything is mounted over /var/log,
+# so moving a file to $OLD_LOG is a rename on the same filesystem. Trims to half
+# of SIZE, as logs that only just fit would soon fill the RAM disk.
+trimLogs () {
+    limit=$(numfmt --from=iec "$SIZE" 2>/dev/null) || return 0
+    [ "$(logSize)" -ge "$limit" ] || return 0
+    target=$((limit / 2))
+    echo "$RAM_LOG is larger than $SIZE, trimming to fit in RAM" | $LOG_OUTPUT
+
+    if [ -d $RAM_LOG/journal ]; then
+        echo "Removing $RAM_LOG/journal" | $LOG_OUTPUT
+        rm -rf $RAM_LOG/journal
+    fi
+    [ "$(logSize)" -gt "$target" ] || return 0
+
+    echo "Removing rotated logs from $RAM_LOG" | $LOG_OUTPUT
+    find $RAM_LOG/ -xdev -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' \) -delete
+
+    # Keep the largest logs in $OLD_LOG, overwriting any kept by an earlier trim.
+    # Leave an empty file behind with the same owner and permissions, as a
+    # service may not be allowed to create it again.
+    mkdir -p $OLD_LOG
+    while [ "$(logSize)" -gt "$target" ]; do
+        largest=$(find $RAM_LOG/ -xdev -type f -size +0c -printf '%s\t%p\n' | sort -n | tail -n 1 | cut -f2-)
+        [ -n "$largest" ] || break
+        kept="$OLD_LOG/oversize-$(echo "${largest#"$RAM_LOG"/}" | tr '/' '_')"
+        mv -f "$largest" "$kept" || break
+        touch "$largest"
+        chown --reference="$kept" "$largest"
+        chmod --reference="$kept" "$largest"
+        echo "Moved $largest to $kept" | $LOG_OUTPUT
+    done
+}
+
 syncToDisk () {
     isSafe
 
@@ -56,6 +95,7 @@ wait_for () {
 
 case "$1" in
   start)
+      trimLogs
       [ -d $HDD_LOG/ ] || mkdir $HDD_LOG/
       mount --bind $RAM_LOG/ $HDD_LOG/
       mount --make-private $HDD_LOG/
