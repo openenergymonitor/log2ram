@@ -8,7 +8,9 @@ if [ -d /var/log/journal ]; then
   sudo systemctl restart systemd-journald
 fi
 
-systemctl -q is-active log2ram  && { echo "ERROR: log2ram service is still running. Please run \"sudo service log2ram stop\" to stop it."; exit 1; }
+# Compare the state: with SYSTEMD_OFFLINE=1 (image builds) systemctl ignores
+# is-active, printing nothing and exiting 0
+[ "$(systemctl is-active log2ram 2>/dev/null)" = "active" ] && { echo "ERROR: log2ram service is still running. Please run \"sudo service log2ram stop\" to stop it."; exit 1; }
 [ "$(id -u)" -eq 0 ] || { echo "You need to be ROOT (sudo can be used)"; exit 1; }
 
 # log2ram
